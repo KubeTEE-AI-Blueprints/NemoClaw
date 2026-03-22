@@ -193,7 +193,7 @@ Local inference options such as Ollama and vLLM are still experimental. On macOS
 
 ## Protection Layers
 
-The sandbox starts with a strict baseline policy that controls network egress and filesystem access:
+The sandbox starts with a default policy that controls network egress and filesystem access:
 
 | Layer      | What it protects                                    | When it applies             |
 |------------|-----------------------------------------------------|-----------------------------|
@@ -203,6 +203,28 @@ The sandbox starts with a strict baseline policy that controls network egress an
 | Inference  | Reroutes model API calls to controlled backends.    | Hot-reloadable at runtime.  |
 
 When the agent tries to reach an unlisted host, OpenShell blocks the request and surfaces it in the TUI for operator approval.
+
+---
+
+## Configuring Sandbox Policy
+
+The sandbox policy is defined in a declarative YAML file and enforced by the OpenShell runtime.
+NemoClaw ships a default policy in [`nemoclaw-blueprint/policies/openclaw-sandbox.yaml`](https://github.com/NVIDIA/NemoClaw/blob/main/nemoclaw-blueprint/policies/openclaw-sandbox.yaml) that denies all network egress except explicitly listed endpoints.
+
+Operators can customize the policy in two ways:
+
+| Method | How | Scope |
+|--------|-----|-------|
+| **Static** | Edit `openclaw-sandbox.yaml` and re-run `nemoclaw onboard`. | Persists across restarts. |
+| **Dynamic** | Run `openshell policy set <policy-file>` on a running sandbox. | Session only; resets on restart. |
+
+NemoClaw includes preset policy files for common integrations such as PyPI, Docker Hub, Slack, and Jira in `nemoclaw-blueprint/policies/presets/`. Apply a preset as-is or use it as a starting template.
+
+NemoClaw is an open project — we are still determining which presets to ship by default. If you have suggestions, please open an [issue](https://github.com/NVIDIA/NemoClaw/issues) or [discussion](https://github.com/NVIDIA/NemoClaw/discussions).
+
+When the agent attempts to reach an endpoint not covered by the policy, OpenShell blocks the request and surfaces it in the TUI (`openshell term`) for the operator to approve or deny in real time. Approved endpoints persist for the current session only.
+
+For step-by-step instructions, see [Customize Network Policy](https://docs.nvidia.com/nemoclaw/latest/network-policy/customize-network-policy.html). For the underlying enforcement details, see the OpenShell [Policy Schema](https://docs.nvidia.com/openshell/latest/reference/policy-schema.html) and [Sandbox Policies](https://docs.nvidia.com/openshell/latest/sandboxes/policies.html) documentation.
 
 ---
 

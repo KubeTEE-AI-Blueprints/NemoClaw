@@ -2,7 +2,7 @@
 title:
   page: "How NemoClaw Works — Plugin, Blueprint, and Sandbox Lifecycle"
   nav: "How It Works"
-description: "Plugin, blueprint, sandbox creation, and inference routing concepts."
+description: "Learn how NemoClaw combines a lightweight CLI plugin with a versioned blueprint to move OpenClaw into a controlled sandbox."
 keywords: ["how nemoclaw works", "nemoclaw sandbox lifecycle blueprint"]
 topics: ["generative_ai", "ai_agents"]
 tags: ["openclaw", "openshell", "sandboxing", "inference_routing", "blueprints", "network_policy"]
@@ -44,7 +44,7 @@ flowchart TB
     subgraph Sandbox["OpenShell Sandbox"]
         AGENT[OpenClaw agent]
         INF[NVIDIA inference, routed]
-        NET[strict network policy]
+        NET[default network policy]
         FS[filesystem isolation]
 
         AGENT --- INF
@@ -117,7 +117,7 @@ NemoClaw routes inference to NVIDIA Endpoints, specifically Nemotron 3 Super 120
 
 ## Network and Filesystem Policy
 
-The sandbox starts with a strict baseline policy defined in `openclaw-sandbox.yaml`.
+The sandbox starts with a default policy defined in `openclaw-sandbox.yaml`.
 This policy controls which network endpoints the agent can reach and which filesystem paths it can access.
 
 - For network, only endpoints listed in the policy are allowed.

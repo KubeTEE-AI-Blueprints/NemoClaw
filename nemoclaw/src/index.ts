@@ -66,6 +66,7 @@ export interface PluginCommandDefinition {
 
 /** Auth method for a provider plugin. */
 export interface ProviderAuthMethod {
+  id?: string;
   type: string;
   envVar?: string;
   headerName?: string;
@@ -192,6 +193,7 @@ function registeredProviderForConfig(
     models: { chat: activeModelEntries(onboardCfg) },
     auth: [
       {
+        id: "env-bearer",
         type: "bearer",
         envVar: providerCredentialEnv,
         headerName: "Authorization",

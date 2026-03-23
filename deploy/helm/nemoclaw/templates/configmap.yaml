@@ -12,7 +12,8 @@ metadata:
     {{- include "nemoclaw.labels" . | nindent 4 }}
 data:
   patch-openclaw.py: |
-    # Patches baked openclaw.json for Kubernetes (no OpenShell inference.local proxy).
+    # Patches baked openclaw.json for Kubernetes while preserving the upstream
+    # local-gateway contract expected by NemoClaw.
     import json
     import os
     import shutil
@@ -23,13 +24,55 @@ data:
     base_url = os.environ.get("NVIDIA_DIRECT_BASE_URL", "https://integrate.api.nvidia.com/v1")
     api_key = os.environ.get("NVIDIA_API_KEY", "")
 
+    def truthy(value):
+        return value.strip().lower() in ("1", "true", "yes", "on") if isinstance(value, str) else bool(value)
+
+    def json_list_env(name):
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return []
+        if not isinstance(data, list):
+            return []
+        result = []
+        for item in data:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if text:
+                result.append(text)
+        return result
+
+    def env_or_default(name, default):
+        value = os.environ.get(name, "")
+        return value if isinstance(value, str) and value != "" else default
+
+    def stringify_list(items):
+        result = []
+        for item in items or []:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if text:
+                result.append(text)
+        return result
+
     shutil.copy2(src, dst)
     with open(dst, encoding="utf-8") as f:
         cfg = json.load(f)
 
     gw = cfg.setdefault("gateway", {})
+    gw["mode"] = "local"
     gw["bind"] = "lan"
     gw["port"] = int(os.environ.get("GATEWAY_PORT", "18789"))
+    auth = gw.setdefault("auth", {})
+    auth["mode"] = "token"
+    gateway_token = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
+    if gateway_token:
+        auth["token"] = gateway_token
     tp = gw.setdefault("trustedProxies", [])
     for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"):
         if cidr not in tp:
@@ -40,9 +83,88 @@ data:
         if p.scheme and p.netloc:
             origin = f"{p.scheme}://{p.netloc}"
             cui = gw.setdefault("controlUi", {})
+            cui["enabled"] = True
+            cui["allowInsecureAuth"] = truthy(os.environ.get("OPENCLAW_CONTROL_UI_ALLOW_INSECURE_AUTH", "false"))
+            cui["dangerouslyDisableDeviceAuth"] = truthy(os.environ.get("OPENCLAW_CONTROL_UI_DISABLE_DEVICE_AUTH", "false"))
             ol = cui.setdefault("allowedOrigins", [])
             if origin not in ol:
                 ol.insert(0, origin)
+    plugins = cfg.setdefault("plugins", {})
+    plugin_allow = plugins.setdefault("allow", [])
+    if "nemoclaw" not in plugin_allow:
+        plugin_allow.append("nemoclaw")
+    plugin_entries = plugins.setdefault("entries", {})
+    plugin_entries.setdefault("nemoclaw", {})["enabled"] = True
+    plugin_installs = plugins.setdefault("installs", {})
+    plugin_installs.setdefault("nemoclaw", {}).update({
+        "source": "path",
+        "spec": "/opt/nemoclaw",
+        "sourcePath": "/opt/nemoclaw",
+        "installPath": "/sandbox/.openclaw-data/extensions/nemoclaw",
+    })
+    agents = cfg.setdefault("agents", {})
+    defaults = agents.setdefault("defaults", {})
+    defaults["workspace"] = "~/.openclaw/workspace"
+    coding_agent_enabled = truthy(os.environ.get("OPENCLAW_CODING_AGENT_ENABLED", "true"))
+    coding_tools_profile = env_or_default("OPENCLAW_TOOLS_PROFILE", "full")
+    agent_list = agents.setdefault("list", [])
+    if not agent_list:
+        agent_list.append(
+            {
+                "id": "default",
+                "name": "NemoClaw Assistant",
+                "workspace": "~/.openclaw/workspace",
+            }
+        )
+    if coding_agent_enabled and coding_tools_profile:
+        for agent in agent_list:
+            if isinstance(agent, dict):
+                agent.setdefault("tools", {})["profile"] = coding_tools_profile
+    cfg.setdefault("cron", {})["enabled"] = False
+    telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    telegram_auto_configure = truthy(os.environ.get("OPENCLAW_TELEGRAM_AUTO_CONFIGURE", "true"))
+    telegram_allow_from_default = {{ (get (get .Values.channels "telegram" | default dict) "allowFrom" | default list | toJson) }}
+    telegram_group_allow_from_default = {{ (get (get .Values.channels "telegram" | default dict) "groupAllowFrom" | default list | toJson) }}
+    if telegram_bot_token and telegram_auto_configure:
+        channels = cfg.setdefault("channels", {})
+        telegram = channels.setdefault("telegram", {})
+        telegram["enabled"] = True
+        if "telegram" not in plugin_allow:
+            plugin_allow.append("telegram")
+        plugin_entries.setdefault("telegram", {})["enabled"] = True
+        telegram["dmPolicy"] = env_or_default("OPENCLAW_TELEGRAM_DM_POLICY", "pairing")
+        telegram["groupPolicy"] = env_or_default("OPENCLAW_TELEGRAM_GROUP_POLICY", "allowlist")
+        telegram.setdefault("groups", {}).setdefault(
+            "*",
+            {},
+        )["requireMention"] = truthy(
+            os.environ.get("OPENCLAW_TELEGRAM_GROUPS_REQUIRE_MENTION", "true")
+        )
+        telegram["streaming"] = env_or_default("OPENCLAW_TELEGRAM_STREAMING", "partial")
+        allow_from = stringify_list(json_list_env("OPENCLAW_TELEGRAM_ALLOW_FROM") or telegram_allow_from_default)
+        group_allow_from = stringify_list(json_list_env("OPENCLAW_TELEGRAM_GROUP_ALLOW_FROM") or telegram_group_allow_from_default)
+        if allow_from:
+            telegram["allowFrom"] = allow_from
+        if group_allow_from:
+            telegram["groupAllowFrom"] = group_allow_from
+    slack_bot_token = os.environ.get("SLACK_BOT_TOKEN", "").strip()
+    slack_app_token = os.environ.get("SLACK_APP_TOKEN", "").strip()
+    slack_auto_configure = truthy(os.environ.get("OPENCLAW_SLACK_AUTO_CONFIGURE", "true"))
+    if slack_bot_token and slack_app_token and slack_auto_configure:
+        channels = cfg.setdefault("channels", {})
+        slack = channels.setdefault("slack", {})
+        slack["enabled"] = True
+        if "slack" not in plugin_allow:
+            plugin_allow.append("slack")
+        slack["mode"] = env_or_default("OPENCLAW_SLACK_MODE", "socket")
+        slack["webhookPath"] = env_or_default("OPENCLAW_SLACK_WEBHOOK_PATH", "/slack/events")
+        slack["botToken"] = slack_bot_token
+        slack["appToken"] = slack_app_token
+        slack["userTokenReadOnly"] = truthy(os.environ.get("OPENCLAW_SLACK_USER_TOKEN_READ_ONLY", "true"))
+        slack["groupPolicy"] = env_or_default("OPENCLAW_SLACK_GROUP_POLICY", "allowlist")
+        slack["streaming"] = env_or_default("OPENCLAW_SLACK_STREAMING", "partial")
+        slack["nativeStreaming"] = truthy(os.environ.get("OPENCLAW_SLACK_NATIVE_STREAMING", "true"))
+        plugin_entries.setdefault("slack", {})["enabled"] = True
 
     providers = cfg.setdefault("models", {}).setdefault("providers", {})
     nvidia = providers.setdefault("nvidia", {})

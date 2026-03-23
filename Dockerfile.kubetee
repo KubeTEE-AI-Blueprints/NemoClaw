@@ -10,7 +10,18 @@ COPY nemoclaw/src/ /opt/nemoclaw/src/
 WORKDIR /opt/nemoclaw
 RUN npm install && npm run build
 
-# Stage 2: Runtime image
+# Stage 2: Build Control UI assets from source because the
+# openclaw@2026.3.22 npm package is missing dist/control-ui.
+FROM node:22-slim@sha256:4f77a690f2f8946ab16fe1e791a3ac0667ae1c3575c3e4d0d4589e9ed5bfaf3d AS control-ui-builder
+RUN corepack enable
+COPY openclaw/tsconfig.json /opt/openclaw/tsconfig.json
+COPY openclaw/apps/shared/ /opt/openclaw/apps/shared/
+COPY openclaw/src/ /opt/openclaw/src/
+COPY openclaw/ui/ /opt/openclaw/ui/
+WORKDIR /opt/openclaw/ui
+RUN pnpm install && pnpm run build
+
+# Stage 3: Runtime image
 FROM node:22-slim@sha256:4f77a690f2f8946ab16fe1e791a3ac0667ae1c3575c3e4d0d4589e9ed5bfaf3d
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -41,31 +52,49 @@ RUN groupadd -r sandbox && useradd -r -g sandbox -d /sandbox -s /bin/bash sandbo
 RUN mkdir -p /sandbox/.openclaw-data/agents/main/agent \
         /sandbox/.openclaw-data/extensions \
         /sandbox/.openclaw-data/workspace \
+        /sandbox/.openclaw-data/workspace-main \
         /sandbox/.openclaw-data/skills \
         /sandbox/.openclaw-data/hooks \
         /sandbox/.openclaw-data/identity \
         /sandbox/.openclaw-data/devices \
         /sandbox/.openclaw-data/canvas \
         /sandbox/.openclaw-data/cron \
+        /sandbox/.openclaw-data/opencode/config \
+        /sandbox/.openclaw-data/opencode/data \
+        /sandbox/.openclaw-data/opencode/cache \
+        /sandbox/.openclaw-data/opencode/state \
     && mkdir -p /sandbox/.openclaw \
+        /sandbox/.config \
+        /sandbox/.local/share \
+        /sandbox/.local/state \
+        /sandbox/.cache \
     && ln -s /sandbox/.openclaw-data/agents /sandbox/.openclaw/agents \
     && ln -s /sandbox/.openclaw-data/extensions /sandbox/.openclaw/extensions \
     && ln -s /sandbox/.openclaw-data/workspace /sandbox/.openclaw/workspace \
+    && ln -s /sandbox/.openclaw-data/workspace-main /sandbox/.openclaw/workspace-main \
     && ln -s /sandbox/.openclaw-data/skills /sandbox/.openclaw/skills \
     && ln -s /sandbox/.openclaw-data/hooks /sandbox/.openclaw/hooks \
     && ln -s /sandbox/.openclaw-data/identity /sandbox/.openclaw/identity \
     && ln -s /sandbox/.openclaw-data/devices /sandbox/.openclaw/devices \
     && ln -s /sandbox/.openclaw-data/canvas /sandbox/.openclaw/canvas \
     && ln -s /sandbox/.openclaw-data/cron /sandbox/.openclaw/cron \
+    && ln -s /sandbox/.openclaw-data/opencode/config /sandbox/.config/opencode \
+    && ln -s /sandbox/.openclaw-data/opencode/data /sandbox/.local/share/opencode \
+    && ln -s /sandbox/.openclaw-data/opencode/state /sandbox/.local/state/opencode \
+    && ln -s /sandbox/.openclaw-data/opencode/cache /sandbox/.cache/opencode \
     && touch /sandbox/.openclaw-data/update-check.json \
+    && touch /sandbox/.openclaw-data/exec-approvals.json \
     && ln -s /sandbox/.openclaw-data/update-check.json /sandbox/.openclaw/update-check.json \
-    && chown -R sandbox:sandbox /sandbox/.openclaw /sandbox/.openclaw-data
+    && ln -s /sandbox/.openclaw-data/exec-approvals.json /sandbox/.openclaw/exec-approvals.json \
+    && chown -R sandbox:sandbox /sandbox/.openclaw /sandbox/.openclaw-data /sandbox/.config /sandbox/.local /sandbox/.cache
 
 # Install OpenClaw CLI
-RUN npm install -g openclaw@2026.3.13
+RUN npm install -g openclaw@2026.3.22
+COPY --from=control-ui-builder /opt/openclaw/dist/control-ui/ /usr/local/lib/node_modules/openclaw/dist/control-ui/
 
 # Install additional npm-managed CLIs.
 RUN npm install -g clawhub
+RUN npm install -g opencode-ai@latest
 RUN npm i -g mcporter
 RUN npm i -g obsidian-cli
 
@@ -108,13 +137,11 @@ ENV NEMOCLAW_MODEL=${NEMOCLAW_MODEL} \
 WORKDIR /sandbox
 USER sandbox
 
-# Write the COMPLETE openclaw.json including gateway config and auth token.
-# This file is immutable at runtime (Landlock read-only on /sandbox/.openclaw).
-# No runtime writes to openclaw.json are needed or possible.
-# Build args (NEMOCLAW_MODEL, CHAT_UI_URL) customize per deployment.
-# Auth token is generated per build so each image has a unique token.
+# Write the baseline openclaw.json with the same local-gateway shape expected by
+# upstream OpenClaw. KubeTEE patches the immutable file at deploy time for
+# cluster-specific networking and direct NVIDIA endpoint integration.
 RUN python3 -c "\
-import json, os, secrets; \
+import json, os; \
 from urllib.parse import urlparse; \
 model = os.environ['NEMOCLAW_MODEL']; \
 chat_ui_url = os.environ['CHAT_UI_URL']; \
@@ -123,13 +150,19 @@ chat_origin = f'{parsed.scheme}://{parsed.netloc}' if parsed.scheme and parsed.n
 origins = ['http://127.0.0.1:18789']; \
 origins = list(dict.fromkeys(origins + [chat_origin])); \
 config = { \
-    'agents': {'defaults': {'model': {'primary': f'inference/{model}'}}}, \
+    'agents': { \
+        'defaults': { \
+            'workspace': '~/.openclaw/workspace', \
+            'model': {'primary': f'inference/{model}'} \
+        }, \
+        'list': [{'id': 'default', 'name': 'NemoClaw Assistant', 'workspace': '~/.openclaw/workspace'}] \
+    }, \
     'models': {'mode': 'merge', 'providers': { \
         'nvidia': { \
             'baseUrl': 'https://inference.local/v1', \
             'apiKey': 'openshell-managed', \
             'api': 'openai-completions', \
-            'models': [{'id': model.split('/')[-1], 'name': model, 'reasoning': False, 'input': ['text'], 'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0}, 'contextWindow': 131072, 'maxTokens': 4096}] \
+            'models': [{'id': model, 'name': model, 'reasoning': False, 'input': ['text'], 'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0}, 'contextWindow': 131072, 'maxTokens': 4096}] \
         }, \
         'inference': { \
             'baseUrl': 'https://inference.local/v1', \
@@ -139,15 +172,19 @@ config = { \
         } \
     }}, \
     'channels': {'defaults': {'configWrites': False}}, \
+    'cron': {'enabled': False}, \
     'gateway': { \
         'mode': 'local', \
+        'bind': 'loopback', \
+        'port': 18789, \
         'controlUi': { \
-            'allowInsecureAuth': True, \
-            'dangerouslyDisableDeviceAuth': True, \
+            'enabled': True, \
+            'allowInsecureAuth': False, \
+            'dangerouslyDisableDeviceAuth': False, \
             'allowedOrigins': origins, \
         }, \
         'trustedProxies': ['127.0.0.1', '::1'], \
-        'auth': {'token': secrets.token_hex(32)} \
+        'auth': {'mode': 'token'} \
     } \
 }; \
 path = os.path.expanduser('~/.openclaw/openclaw.json'); \

@@ -8,8 +8,8 @@ description: >-
   Defaults match Traefik from the KubeTEE monorepo rke2-traefik-additional-manifest.yaml
   (Gateway traefik-gateway / kube-system, listener websecure). Not intended for generic clusters.
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.1.1
+appVersion: "2026.3.22"
 keywords:
   - openclaw
   - nemoclaw

@@ -23,6 +23,15 @@ SPDX-License-Identifier: Apache-2.0
 {{- $workspacePersistence := get $persistence "workspace" | default dict }}
 {{- $secretValues := get .Values "secret" | default dict }}
 {{- $extraSecretData := get $secretValues "extraStringData" | default dict }}
+{{- $configPatch := get .Values "configPatch" | default dict }}
+{{- $configPatchExtraEnv := get $configPatch "extraEnv" | default list }}
+{{- $codingAgent := get .Values "codingAgent" | default dict }}
+{{- $codingAgentEnabled := get $codingAgent "enabled" | default true }}
+{{- $codingAgentRuntime := get $codingAgent "runtime" | default "opencode" }}
+{{- $codingAgentToolsProfile := get $codingAgent "toolsProfile" | default "full" }}
+{{- $opencode := get $codingAgent "opencode" | default dict }}
+{{- $gatewayValues := get .Values "gateway" | default dict }}
+{{- $gatewayControlUi := get $gatewayValues "controlUi" | default dict }}
 {{- $workspacePersistenceEnabled := get $workspacePersistence "enabled" | default true }}
 {{- $workspaceExistingClaim := get $workspacePersistence "existingClaim" | default "" }}
 apiVersion: apps/v1
@@ -41,16 +50,20 @@ spec:
       {{- include "nemoclaw.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
       annotations:
+        {{- if .Values.directNvidiaApi.enabled }}
+        checksum/patch-config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       labels:
         {{- include "nemoclaw.selectorLabels" . | nindent 8 }}
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -69,27 +82,119 @@ spec:
             runAsUser: 0
             runAsNonRoot: false
           env:
+            - name: HOME
+              value: /sandbox
+            - name: OPENCLAW_CONFIG_DIR
+              value: /sandbox/.openclaw
             - name: GATEWAY_PORT
               value: {{ .Values.service.port | quote }}
             - name: CHAT_UI_URL
               value: {{ $chatUiUrl | quote }}
             - name: NVIDIA_DIRECT_BASE_URL
               value: {{ .Values.directNvidiaApi.baseUrl | quote }}
+            - name: OPENCLAW_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: "openclaw-gateway-token"
+                  optional: true
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: "TELEGRAM_BOT_TOKEN"
+                  optional: true
+            - name: OPENCLAW_TELEGRAM_AUTO_CONFIGURE
+              value: {{ (get (get .Values.channels "telegram" | default dict) "autoConfigureFromEnv" | default true) | quote }}
+            - name: OPENCLAW_TELEGRAM_DM_POLICY
+              value: {{ (get (get .Values.channels "telegram" | default dict) "dmPolicy" | default "pairing") | quote }}
+            - name: OPENCLAW_TELEGRAM_GROUP_POLICY
+              value: {{ (get (get .Values.channels "telegram" | default dict) "groupPolicy" | default "allowlist") | quote }}
+            - name: OPENCLAW_TELEGRAM_GROUPS_REQUIRE_MENTION
+              value: {{ (get (get .Values.channels "telegram" | default dict) "groupsRequireMention" | default true) | quote }}
+            - name: OPENCLAW_TELEGRAM_STREAMING
+              value: {{ (get (get .Values.channels "telegram" | default dict) "streaming" | default "partial") | quote }}
+            - name: OPENCLAW_TELEGRAM_ALLOW_FROM
+              value: {{ (get (get .Values.channels "telegram" | default dict) "allowFrom" | default list | toJson) | quote }}
+            - name: OPENCLAW_TELEGRAM_GROUP_ALLOW_FROM
+              value: {{ (get (get .Values.channels "telegram" | default dict) "groupAllowFrom" | default list | toJson) | quote }}
+            - name: OPENCLAW_SLACK_AUTO_CONFIGURE
+              value: {{ (get (get .Values.channels "slack" | default dict) "autoConfigureFromEnv" | default true) | quote }}
+            - name: OPENCLAW_SLACK_MODE
+              value: {{ (get (get .Values.channels "slack" | default dict) "mode" | default "socket") | quote }}
+            - name: OPENCLAW_SLACK_WEBHOOK_PATH
+              value: {{ (get (get .Values.channels "slack" | default dict) "webhookPath" | default "/slack/events") | quote }}
+            - name: OPENCLAW_SLACK_USER_TOKEN_READ_ONLY
+              value: {{ (get (get .Values.channels "slack" | default dict) "userTokenReadOnly" | default true) | quote }}
+            - name: OPENCLAW_SLACK_GROUP_POLICY
+              value: {{ (get (get .Values.channels "slack" | default dict) "groupPolicy" | default "allowlist") | quote }}
+            - name: OPENCLAW_SLACK_STREAMING
+              value: {{ (get (get .Values.channels "slack" | default dict) "streaming" | default "partial") | quote }}
+            - name: OPENCLAW_SLACK_NATIVE_STREAMING
+              value: {{ (get (get .Values.channels "slack" | default dict) "nativeStreaming" | default true) | quote }}
+            - name: OPENCLAW_CODING_AGENT_ENABLED
+              value: {{ $codingAgentEnabled | quote }}
+            - name: OPENCLAW_CODING_AGENT_RUNTIME
+              value: {{ $codingAgentRuntime | quote }}
+            - name: OPENCLAW_TOOLS_PROFILE
+              value: {{ $codingAgentToolsProfile | quote }}
+            - name: OPENCLAW_CONTROL_UI_ALLOW_INSECURE_AUTH
+              value: {{ (get $gatewayControlUi "allowInsecureAuth" | default false) | quote }}
+            - name: OPENCLAW_CONTROL_UI_DISABLE_DEVICE_AUTH
+              value: {{ (get $gatewayControlUi "dangerouslyDisableDeviceAuth" | default false) | quote }}
             - name: NVIDIA_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ $secretName }}
                   key: {{ $secretKey | quote }}
+            {{- if .Values.existingSecret }}
+            {{- $existingSecretObj := lookup "v1" "Secret" .Release.Namespace .Values.existingSecret }}
+            {{- if $existingSecretObj }}
+            {{- range $rawKey, $_ := (get $existingSecretObj "data" | default dict) }}
+            {{- $envName := regexReplaceAll "[^A-Z0-9_]" ($rawKey | upper | replace "-" "_" | replace "." "_") "_" }}
+            {{- if and (ne $envName "NVIDIA_API_KEY") (ne $envName "OPENCLAW_GATEWAY_TOKEN") (ne $envName "TELEGRAM_BOT_TOKEN") }}
+            - name: {{ $envName }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ $rawKey | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- else }}
+            {{- range $rawKey, $_ := $extraSecretData }}
+            {{- $envName := regexReplaceAll "[^A-Z0-9_]" ($rawKey | upper | replace "-" "_" | replace "." "_") "_" }}
+            {{- if and (ne $envName "NVIDIA_API_KEY") (ne $envName "OPENCLAW_GATEWAY_TOKEN") (ne $envName "TELEGRAM_BOT_TOKEN") }}
+            - name: {{ $envName }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ $rawKey | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- with $configPatchExtraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           command:
             - /bin/bash
             - -c
-            - python3 /scripts/patch-openclaw.py
+            - >
+              {{- if $workspacePersistenceEnabled }}
+              mkdir -p /persist/nemoclaw-home &&
+              chown 999:999 /persist/nemoclaw-home &&
+              {{- end }}
+              python3 /scripts/patch-openclaw.py
           volumeMounts:
             - name: openclaw-config
               mountPath: /config
             - name: patch-script
               mountPath: /scripts
               readOnly: true
+            {{- if $workspacePersistenceEnabled }}
+            - name: workspace
+              mountPath: /persist
+            {{- end }}
       {{- end }}
       containers:
         - name: nemoclaw
@@ -102,10 +207,56 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           env:
+            - name: HOME
+              value: /sandbox
+            - name: OPENCLAW_CONFIG_DIR
+              value: /sandbox/.openclaw
+            - name: XDG_CONFIG_HOME
+              value: /sandbox/.config
+            - name: XDG_DATA_HOME
+              value: /sandbox/.local/share
+            - name: XDG_STATE_HOME
+              value: /sandbox/.local/state
+            - name: XDG_CACHE_HOME
+              value: /sandbox/.cache
+            - name: OPENCODE_CONFIG
+              value: /sandbox/.config/opencode/opencode.json
+            - name: NODE_ENV
+              value: production
             - name: GATEWAY_PORT
               value: {{ .Values.service.port | quote }}
             - name: CHAT_UI_URL
               value: {{ $chatUiUrl | quote }}
+            - name: OPENCLAW_CODING_AGENT_ENABLED
+              value: {{ $codingAgentEnabled | quote }}
+            - name: OPENCLAW_CODING_AGENT_RUNTIME
+              value: {{ $codingAgentRuntime | quote }}
+            - name: OPENCODE_ENABLED
+              value: {{ $codingAgentEnabled | quote }}
+            - name: OPENCODE_PROVIDER_ID
+              value: {{ (get $opencode "providerId" | default "nim") | quote }}
+            - name: OPENCODE_PROVIDER_NAME
+              value: {{ (get $opencode "providerName" | default "NVIDIA NIM") | quote }}
+            - name: OPENCODE_BASE_URL
+              value: {{ (get $opencode "baseUrl" | default "") | quote }}
+            - name: OPENCODE_MODEL
+              value: {{ (get $opencode "model" | default "") | quote }}
+            - name: OPENCODE_MODEL_NAME
+              value: {{ (get $opencode "modelName" | default "") | quote }}
+            - name: OPENCODE_API_KEY_ENV
+              value: {{ (get $opencode "apiKeyEnv" | default "NVIDIA_API_KEY") | quote }}
+            - name: OPENCODE_HEADERS_JSON
+              value: {{ (get $opencode "headers" | default dict | toJson) | quote }}
+            - name: OPENCODE_CONTEXT_WINDOW
+              value: {{ (get $opencode "contextWindow" | default 131072) | quote }}
+            - name: OPENCODE_MAX_OUTPUT_TOKENS
+              value: {{ (get $opencode "maxOutputTokens" | default 8192) | quote }}
+            - name: OPENCLAW_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: "openclaw-gateway-token"
+                  optional: true
             - name: NVIDIA_DIRECT_BASE_URL
               value: {{ .Values.directNvidiaApi.baseUrl | quote }}
             {{- if .Values.directNvidiaApi.enabled }}
@@ -120,7 +271,7 @@ spec:
             {{- if $existingSecretObj }}
             {{- range $rawKey, $_ := (get $existingSecretObj "data" | default dict) }}
             {{- $envName := regexReplaceAll "[^A-Z0-9_]" ($rawKey | upper | replace "-" "_" | replace "." "_") "_" }}
-            {{- if ne $envName "NVIDIA_API_KEY" }}
+            {{- if and (ne $envName "NVIDIA_API_KEY") (ne $envName "OPENCLAW_GATEWAY_TOKEN") }}
             - name: {{ $envName }}
               valueFrom:
                 secretKeyRef:
@@ -132,7 +283,7 @@ spec:
             {{- else }}
             {{- range $rawKey, $_ := $extraSecretData }}
             {{- $envName := regexReplaceAll "[^A-Z0-9_]" ($rawKey | upper | replace "-" "_" | replace "." "_") "_" }}
-            {{- if ne $envName "NVIDIA_API_KEY" }}
+            {{- if and (ne $envName "NVIDIA_API_KEY") (ne $envName "OPENCLAW_GATEWAY_TOKEN") }}
             - name: {{ $envName }}
               valueFrom:
                 secretKeyRef:
@@ -191,20 +342,21 @@ spec:
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- if .Values.directNvidiaApi.enabled }}
           volumeMounts:
+            - name: tmp-volume
+              mountPath: /tmp
+            {{- if .Values.directNvidiaApi.enabled }}
             - name: openclaw-config
               mountPath: /sandbox/.openclaw/openclaw.json
               subPath: openclaw.json
+            {{- end }}
             {{- if $workspacePersistenceEnabled }}
             - name: workspace
-              mountPath: /sandbox/.openclaw-data/workspace
-            {{- end }}
-          {{- else if $workspacePersistenceEnabled }}
-          volumeMounts:
+              mountPath: /sandbox/.openclaw-data
             - name: workspace
-              mountPath: /sandbox/.openclaw-data/workspace
-          {{- end }}
+              mountPath: /sandbox/.nemoclaw
+              subPath: nemoclaw-home
+            {{- end }}
       volumes:
         {{- if .Values.directNvidiaApi.enabled }}
         - name: openclaw-config
@@ -219,6 +371,8 @@ spec:
           persistentVolumeClaim:
             claimName: {{ $workspaceExistingClaim | default (printf "%s-workspace" (include "nemoclaw.fullname" .)) }}
         {{- end }}
+        - name: tmp-volume
+          emptyDir: {}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

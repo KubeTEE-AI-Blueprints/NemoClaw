@@ -15,11 +15,11 @@ The [NemoClaw README](../../README.md) describes a **host** workflow: Docker, th
 
 ## What this Helm chart does
 
-This chart runs the **same sandbox image** as a Kubernetes `Deployment`:
+This chart runs the **same sandbox image** as a Kubernetes `Deployment`, but now keeps more of the upstream OpenClaw Kubernetes contract intact:
 
-1. **Init container** copies `openclaw.json` from the image and rewrites the NVIDIA provider to call **`https://integrate.api.nvidia.com/v1`** directly with your API key. That avoids the OpenShell `inference.local` proxy, which is not available when OpenShell is not running on the node.
-2. The main container runs **`/usr/local/bin/nemoclaw-start`**, which now also auto-syncs the same local onboarding artifacts that `nemoclaw onboard` would create for NVIDIA Endpoint usage: **`~/.nemoclaw/credentials.json`** (with `NVIDIA_API_KEY`) and **`~/.nemoclaw/config.json`** (endpoint, model, provider metadata). It then starts the OpenClaw gateway inside the pod on **`GATEWAY_PORT`** (Helm **`service.port`**, default **18789**) with **`openclaw gateway run --bind lan --port …`** so the process listens on **all interfaces**, not loopback. Optional auto-pairing: see `scripts/nemoclaw-start.sh`.
-3. The chart can now provision a **workspace PVC** mounted at **`/sandbox/.openclaw-data/workspace`** so files under the OpenClaw workspace survive pod restarts. This follows the same persistence idea used by the upstream OpenClaw Kubernetes manifests, adapted to NemoClaw’s split writable-state layout.
+1. **Init container** copies `openclaw.json` from the image and rewrites the NVIDIA provider to call **`https://integrate.api.nvidia.com/v1`** directly with your API key. It also enforces upstream-style token auth, carries forward the default agent/workspace layout, injects a stable `OPENCLAW_GATEWAY_TOKEN` when available, and can now derive namespace-specific channel config such as Telegram allowlists from Helm values plus Secret-backed env vars. That avoids the OpenShell `inference.local` proxy, which is not available when OpenShell is not running on the node.
+2. The main container runs **`/usr/local/bin/nemoclaw-start`**, which now also recreates the full writable OpenClaw state layout under **`/sandbox/.openclaw-data`**, seeds the upstream-style workspace `AGENTS.md`, auto-syncs the same local onboarding artifacts that `nemoclaw onboard` would create for NVIDIA Endpoint usage, writes a runtime `opencode` config when the coding-agent NIM values are set, and then starts the OpenClaw gateway inside the pod on **`GATEWAY_PORT`** (Helm **`service.port`**, default **18789**) with **`openclaw gateway run --bind lan --port …`** so the process listens on **all interfaces**, not loopback. Optional auto-pairing: see `scripts/nemoclaw-start.sh`.
+3. The chart now mounts the default PVC at **`/sandbox/.openclaw-data`**, so the whole writable OpenClaw runtime state survives restarts: workspace files, pairing/device state, hooks, canvas data, and other mutable runtime artifacts. The values key is still **`persistence.workspace.*`** for backward compatibility.
 
 ### What you do *not* get vs full OpenShell
 
@@ -29,11 +29,14 @@ This chart runs the **same sandbox image** as a Kubernetes `Deployment`:
 
 ## Build the image
 
-From the **NemoClaw repository root** (where `Dockerfile.kubetee` lives). **Use `linux/amd64`** so the image runs on KubeTEE GPU nodes (including when you build on Apple Silicon):
+From the **NemoClaw repository root** (where `Dockerfile.kubetee` lives). **Use `linux/amd64`** so the image runs on KubeTEE GPU nodes (including when you build on Apple Silicon). When you publish a versioned image, use the plain version number as the tag, for example `2026.3.22`, and push `latest` from the same build:
 
 ```bash
-docker build --platform linux/amd64 -f Dockerfile.kubetee -t <registry>/<project>/nemoclaw:<tag> . \
-&& docker push <registry>/<project>/nemoclaw:<tag>
+docker build --platform linux/amd64 -f Dockerfile.kubetee \
+  -t <registry>/<project>/nemoclaw:2026.3.22 \
+  -t <registry>/<project>/nemoclaw:latest .
+docker push <registry>/<project>/nemoclaw:2026.3.22
+docker push <registry>/<project>/nemoclaw:latest
 ```
 
 You can pass build args such as `NEMOCLAW_MODEL` and `CHAT_UI_URL` as documented in the `Dockerfile`.
@@ -44,7 +47,6 @@ You can pass build args such as `NEMOCLAW_MODEL` and `CHAT_UI_URL` as documented
 helm upgrade --install nemoclaw ./deploy/helm/nemoclaw \
   -n <namespace> --create-namespace \
   --set image.repository=<registry>/<project>/nemoclaw \
-  --set image.tag=<tag> \
   --set nvidiaApiKey=$NVIDIA_API_KEY
 ```
 
@@ -58,7 +60,6 @@ kubectl create secret generic nemoclaw-nvidia -n <namespace> \
 ```bash
 helm upgrade --install nemoclaw ./deploy/helm/nemoclaw -n <namespace> \
   --set image.repository=<registry>/<project>/nemoclaw \
-  --set image.tag=<tag> \
   --set existingSecret=nemoclaw-nvidia
 ```
 
@@ -108,17 +109,44 @@ HTTPS is still terminated on the **Gateway** listener. Either:
 
 See [cert-manager Gateway API](https://cert-manager.io/docs/usage/gateway/) and [Traefik Gateway TLS](https://doc.traefik.io/traefik/routing/providers/kubernetes-gateway/).
 
-### Workspace Persistence
+### Writable State Persistence
 
-The upstream OpenClaw manifests mount a PVC for the OpenClaw home directory. In this chart, the writable runtime state already lives under **`/sandbox/.openclaw-data`**, so the PVC is scoped to the workspace path only:
+The upstream OpenClaw manifests mount a PVC for the OpenClaw home directory. In this chart, the writable runtime state lives under **`/sandbox/.openclaw-data`**, and the default PVC now mounts that whole directory:
 
-- **Mount path:** `/sandbox/.openclaw-data/workspace`
+- **Mount path:** `/sandbox/.openclaw-data`
 - **Default claim name:** `<release>-workspace`
 - **Default size:** `10Gi`
 - **Default access mode:** `ReadWriteOnce`
 - **Default storage class:** `longhorn`
 
-Use **`persistence.workspace.existingClaim`** if you want to bind the Deployment to an existing claim instead of creating one from the chart.
+This is closer to the upstream persistence model while still respecting the split immutable-config vs writable-state layout in the KubeTEE image. Use **`persistence.workspace.existingClaim`** if you want to bind the Deployment to an existing claim instead of creating one from the chart.
+
+### Enterprise Namespace Customization
+
+The chart is now intended to be reused per employee or enterprise namespace:
+
+- Use a namespace-local `existingSecret` to supply tenant-specific OpenClaw env vars such as `TELEGRAM_BOT_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `OPENAI_API_KEY`, or other provider credentials.
+- The main container still receives those secret-backed env vars automatically.
+- The init patcher now also sees them, so generated immutable config can include namespace-specific channel settings without rebuilding the image.
+- Telegram-specific policy is configurable through `channels.telegram.*`, including `allowFrom` and `groupAllowFrom` so a namespace can restrict access to specific employee user IDs.
+- Slack-specific plugin and channel settings are configurable through `channels.slack.*`; the chart auto-enables Slack only when both `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` are present.
+
+### Coding agent with `opencode`
+
+The bundled OpenClaw `coding-agent` skill is terminal-driven. In this Kubernetes variant, the image now includes `opencode`, and the init patcher now places the default OpenClaw agent on **`tools.profile: "full"`** so delegated coding tasks are not constrained by the generic coding-profile allowlist shipped upstream.
+
+The chart also exposes a dedicated `codingAgent.*` values block so `opencode` can be pointed at an OpenAI-compatible in-cluster NVIDIA NIM endpoint without rebuilding the image. The generated runtime config lives under the persisted writable state and uses the OpenCode provider format:
+
+- `codingAgent.runtime` should remain `opencode`
+- `codingAgent.toolsProfile` now defaults to `full`
+- `codingAgent.opencode.baseUrl` should point at the in-cluster NIM OpenAI endpoint, for example `http://nim-llm.nemo.svc.cluster.local:8000/v1`
+- `codingAgent.opencode.model` should be the NIM-served model id
+- `codingAgent.opencode.apiKeyEnv` can stay `NVIDIA_API_KEY` or point at another secret-backed env such as `OPENCODE_NIM_API_KEY`
+- `codingAgent.opencode.headers` is available when the internal NIM route needs static headers
+
+The chart also exposes `gateway.controlUi.allowInsecureAuth` and `gateway.controlUi.dangerouslyDisableDeviceAuth`. The risky device-auth bypass now defaults to `false`, while `allowInsecureAuth` remains configurable for this deployment.
+
+If `baseUrl` or `model` is left empty, `opencode` is still installed but its generated config is skipped until those namespace-specific values are provided.
 
 ### Probes
 
@@ -131,6 +159,11 @@ The chart now follows the upstream OpenClaw manifest pattern and uses exec probe
 These probe timings are intentionally hard-coded in the Deployment template to mirror the upstream OpenClaw Kubernetes manifest, rather than being exposed as chart values.
 
 Because the workspace PVC is **`ReadWriteOnce`** by default and the chart runs a single replica, the Deployment strategy is also hard-coded to **`Recreate`** to avoid volume-attach races during rollouts.
+
+### Remaining Intentional Differences
+
+- The chart still uses direct NVIDIA Endpoint access instead of the full host-side OpenShell `inference.local` proxy. That is the main remaining runtime gap versus a full upstream host deployment.
+- Kubernetes owns the outer isolation boundary here. The chart now mirrors more of upstream OpenClaw’s pod contract, but it still relies on cluster primitives such as Pod security settings, Gateway API, PVCs, and optional NetworkPolicy instead of host-launched OpenShell sandbox orchestration.
 
 ## References
 

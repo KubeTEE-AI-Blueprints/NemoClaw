@@ -17,6 +17,177 @@ NEMOCLAW_CMD=("$@")
 GATEWAY_PORT="${GATEWAY_PORT:-18789}"
 CHAT_UI_URL="${CHAT_UI_URL:-http://127.0.0.1:${GATEWAY_PORT}}"
 PUBLIC_PORT="${GATEWAY_PORT}"
+OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-/sandbox/.openclaw-data}"
+XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-/sandbox/.config}"
+XDG_DATA_HOME="${XDG_DATA_HOME:-/sandbox/.local/share}"
+XDG_STATE_HOME="${XDG_STATE_HOME:-/sandbox/.local/state}"
+XDG_CACHE_HOME="${XDG_CACHE_HOME:-/sandbox/.cache}"
+OPENCODE_CONFIG="${OPENCODE_CONFIG:-${XDG_CONFIG_HOME}/opencode/opencode.json}"
+export OPENCLAW_STATE_DIR XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME OPENCODE_CONFIG
+
+ensure_runtime_state_layout() {
+  mkdir -p \
+    "${OPENCLAW_STATE_DIR}/agents/main/agent" \
+    "${OPENCLAW_STATE_DIR}/extensions" \
+    "${OPENCLAW_STATE_DIR}/workspace" \
+    "${OPENCLAW_STATE_DIR}/workspace-main" \
+    "${OPENCLAW_STATE_DIR}/skills" \
+    "${OPENCLAW_STATE_DIR}/hooks" \
+    "${OPENCLAW_STATE_DIR}/identity" \
+    "${OPENCLAW_STATE_DIR}/devices" \
+    "${OPENCLAW_STATE_DIR}/canvas" \
+    "${OPENCLAW_STATE_DIR}/cron" \
+    "${OPENCLAW_STATE_DIR}/opencode/config" \
+    "${OPENCLAW_STATE_DIR}/opencode/data" \
+    "${OPENCLAW_STATE_DIR}/opencode/cache" \
+    "${OPENCLAW_STATE_DIR}/opencode/state"
+
+  if [ ! -f "${OPENCLAW_STATE_DIR}/update-check.json" ]; then
+    printf '{}\n' > "${OPENCLAW_STATE_DIR}/update-check.json"
+  fi
+
+  if [ ! -f "${OPENCLAW_STATE_DIR}/exec-approvals.json" ]; then
+    printf '{}\n' > "${OPENCLAW_STATE_DIR}/exec-approvals.json"
+  fi
+
+  if [ ! -f "${OPENCLAW_STATE_DIR}/workspace/AGENTS.md" ]; then
+    cat > "${OPENCLAW_STATE_DIR}/workspace/AGENTS.md" <<'EOF'
+# OpenClaw Assistant
+
+You are a helpful AI assistant running in Kubernetes.
+EOF
+  fi
+}
+
+sync_nemoclaw_plugin_bundle() {
+  python3 - <<'PYSYNC'
+import shutil
+from pathlib import Path
+
+source_root = Path("/opt/nemoclaw")
+target_root = Path("/sandbox/.openclaw-data/extensions/nemoclaw")
+
+target_root.mkdir(parents=True, exist_ok=True)
+
+target_dist = target_root / "dist"
+if target_dist.exists():
+    shutil.rmtree(target_dist)
+shutil.copytree(source_root / "dist", target_dist)
+
+for filename in ("openclaw.plugin.json", "package.json"):
+    shutil.copy2(source_root / filename, target_root / filename)
+PYSYNC
+}
+
+write_opencode_config() {
+  python3 - <<'PYOPENCODE'
+import json
+import os
+from pathlib import Path
+
+
+def truthy(value):
+    return value.strip().lower() in {"1", "true", "yes", "on"} if isinstance(value, str) else bool(value)
+
+
+def parse_headers(raw):
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    result = {}
+    for key, value in data.items():
+        key_text = str(key).strip()
+        value_text = str(value).strip()
+        if key_text and value_text:
+            result[key_text] = value_text
+    return result
+
+
+def maybe_int(raw):
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except Exception:
+        return None
+    return value if value > 0 else None
+
+
+enabled = truthy(os.environ.get("OPENCODE_ENABLED", "false"))
+runtime = (os.environ.get("OPENCLAW_CODING_AGENT_RUNTIME", "") or "").strip()
+base_url = (os.environ.get("OPENCODE_BASE_URL", "") or "").strip()
+model_id = (os.environ.get("OPENCODE_MODEL", "") or "").strip()
+provider_id = (os.environ.get("OPENCODE_PROVIDER_ID", "nim") or "nim").strip()
+provider_name = (os.environ.get("OPENCODE_PROVIDER_NAME", "NVIDIA NIM") or "NVIDIA NIM").strip()
+model_name = (os.environ.get("OPENCODE_MODEL_NAME", "") or "").strip() or model_id
+api_key_env = (os.environ.get("OPENCODE_API_KEY_ENV", "") or "").strip()
+headers = parse_headers(os.environ.get("OPENCODE_HEADERS_JSON", ""))
+context_window = maybe_int(os.environ.get("OPENCODE_CONTEXT_WINDOW", ""))
+max_output_tokens = maybe_int(os.environ.get("OPENCODE_MAX_OUTPUT_TOKENS", ""))
+
+config_path = Path(os.environ.get("OPENCODE_CONFIG", str(Path.home() / ".config" / "opencode" / "opencode.json")))
+config_path.parent.mkdir(parents=True, exist_ok=True)
+(Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))) / "opencode").mkdir(parents=True, exist_ok=True)
+(Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state"))) / "opencode").mkdir(parents=True, exist_ok=True)
+(Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "opencode").mkdir(parents=True, exist_ok=True)
+
+if not enabled or runtime != "opencode" or not base_url or not model_id:
+    if config_path.exists():
+        config_path.unlink()
+    reason = "disabled"
+    if enabled and runtime == "opencode":
+        reason = "missing OPENCODE_BASE_URL or OPENCODE_MODEL"
+    elif enabled:
+        reason = f"runtime={runtime or 'unset'}"
+    print(f"[opencode] skipped config generation ({reason})")
+    raise SystemExit(0)
+
+config = {
+    "$schema": "https://opencode.ai/config.json",
+    "model": f"{provider_id}/{model_id}",
+    "provider": {
+        provider_id: {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": provider_name,
+            "options": {
+                "baseURL": base_url,
+            },
+            "models": {
+                model_id: {
+                    "name": model_name,
+                }
+            },
+        }
+    },
+}
+
+options = config["provider"][provider_id]["options"]
+if api_key_env:
+    options["apiKey"] = f"{{env:{api_key_env}}}"
+if headers:
+    options["headers"] = headers
+
+limit = {}
+if context_window is not None:
+    limit["context"] = context_window
+if max_output_tokens is not None:
+    limit["output"] = max_output_tokens
+if limit:
+    config["provider"][provider_id]["models"][model_id]["limit"] = limit
+
+with open(config_path, "w", encoding="utf-8") as fh:
+    json.dump(config, fh, indent=2)
+    fh.write("\n")
+os.chmod(config_path, 0o600)
+print(f"[opencode] wrote {config_path} for model {provider_id}/{model_id}")
+PYOPENCODE
+}
 
 write_auth_profile() {
   if [ -z "${NVIDIA_API_KEY:-}" ]; then
@@ -203,9 +374,11 @@ echo 'Setting up NemoClaw...'
 # openclaw doctor --fix and openclaw plugins install already ran at build time
 # (Dockerfile Step 28). At runtime they fail with EPERM against the locked
 # /sandbox/.openclaw directory and accomplish nothing.
+ensure_runtime_state_layout
+sync_nemoclaw_plugin_bundle
 write_auth_profile
 sync_onboard_state
-openclaw plugins install /opt/nemoclaw > /dev/null 2>&1 || true
+write_opencode_config
 
 if [ ${#NEMOCLAW_CMD[@]} -gt 0 ]; then
   exec "${NEMOCLAW_CMD[@]}"

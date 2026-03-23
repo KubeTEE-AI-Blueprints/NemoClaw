@@ -43,6 +43,55 @@ secret:
   # `github-token` -> `GITHUB_TOKEN`, `openai-api-key` -> `OPENAI_API_KEY`.
   extraStringData: {}
 
+configPatch:
+  # Extra env vars for the init-time openclaw.json patcher.
+  # Use this when a namespace-specific deployment needs additional config inputs
+  # beyond the secret-backed env passthrough handled automatically in the template.
+  extraEnv: []
+
+gateway:
+  controlUi:
+    allowInsecureAuth: true
+    dangerouslyDisableDeviceAuth: false
+
+codingAgent:
+  enabled: true
+  toolsProfile: "full"
+  runtime: "opencode"
+  opencode:
+    providerId: "nim"
+    providerName: "NVIDIA NIM"
+    baseUrl: ""
+    model: ""
+    modelName: ""
+    apiKeyEnv: "NVIDIA_API_KEY"
+    headers: {}
+    contextWindow: 131072
+    maxOutputTokens: 8192
+
+channels:
+  telegram:
+    # If true, the init patcher writes Telegram channel config only when
+    # TELEGRAM_BOT_TOKEN is present in the pod environment.
+    autoConfigureFromEnv: true
+    dmPolicy: "pairing"
+    groupPolicy: "allowlist"
+    groupsRequireMention: true
+    streaming: "partial"
+    allowFrom: []
+    groupAllowFrom: []
+  slack:
+    # If true, the init patcher enables the Slack plugin and writes Slack
+    # channel config only when both SLACK_BOT_TOKEN and SLACK_APP_TOKEN are
+    # present in the pod environment.
+    autoConfigureFromEnv: true
+    mode: "socket"
+    webhookPath: "/slack/events"
+    userTokenReadOnly: true
+    groupPolicy: "allowlist"
+    streaming: "partial"
+    nativeStreaming: true
+
 extraEnv: []
 
 resources:
@@ -57,10 +106,18 @@ gpu:
 
 podSecurityContext:
   fsGroup: 999
+  seccompProfile:
+    type: RuntimeDefault
 
 containerSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 999
+  runAsGroup: 999
   allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
 
 # Optional extra container args (command is fixed in templates/deployment.yaml).
 args: []
@@ -73,6 +130,9 @@ persistence:
       - ReadWriteOnce
     size: 10Gi
     storageClassName: "longhorn"
+    # Retained for backward compatibility with the earlier chart surface.
+    # The PVC is mounted at /sandbox/.openclaw-data so the full writable
+    # OpenClaw runtime state persists, not just the workspace directory.
 
 service:
   type: ClusterIP

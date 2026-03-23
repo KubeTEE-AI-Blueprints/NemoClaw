@@ -36,7 +36,9 @@ metadata:
     {{- end }}
     {{- end }}
     external-dns.alpha.kubernetes.io/hostname: {{ $ann | quote }}
-    external-dns.alpha.kubernetes.io/target: {{ required "nemoclaw: could not determine service.externalDns.target automatically; set service.externalDns.target or ensure the Traefik Service has a LoadBalancer IP/hostname" $target | quote }}
+    {{- if $target }}
+    external-dns.alpha.kubernetes.io/target: {{ $target | quote }}
+    {{- end }}
     {{- end }}
     {{- with .Values.service.annotations }}
     {{- toYaml . | nindent 4 }}

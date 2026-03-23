@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 KubeTEE AI LTD
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v2
+name: nemoclaw
+description: >-
+  KubeTEE: run the NemoClaw sandbox image (OpenClaw + Nemotron) on RKE2.
+  Defaults match Traefik from the KubeTEE monorepo rke2-traefik-additional-manifest.yaml
+  (Gateway traefik-gateway / kube-system, listener websecure). Not intended for generic clusters.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - openclaw
+  - nemoclaw
+  - nvidia
+home: https://github.com/NVIDIA/NemoClaw
+sources:
+  - https://github.com/NVIDIA/NemoClaw
+maintainers:
+  - name: KubeTEE AI LTD
+    url: https://kubetee.ai

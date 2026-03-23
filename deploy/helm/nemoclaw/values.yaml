@@ -1,0 +1,130 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 KubeTEE AI LTD
+# SPDX-License-Identifier: Apache-2.0
+#
+# KubeTEE-only chart — targets RKE2 clusters where Traefik is installed from the monorepo
+# `rke2-traefik-additional-manifest.yaml` (HelmChart traefik ~39.x, namespace kube-system:
+# kubernetesGateway + default Gateway/GatewayClass, default IngressClass).
+#
+# Traefik’s default Gateway resource name is `traefik-gateway`; HTTPS listener sectionName is `websecure`.
+# Build from repo root for KubeTEE (amd64): docker build --platform linux/amd64 -t <registry>/nemoclaw:<tag> .
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: "" # required at install time, e.g. nvcr.io/your-org/nemoclaw
+  tag: "latest"
+  # Always: `latest` tag must pull after each push; IfNotPresent leaves stale layers on the node.
+  pullPolicy: Always
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+directNvidiaApi:
+  enabled: true
+  baseUrl: "https://integrate.api.nvidia.com/v1"
+
+nvidiaApiKey: ""
+
+existingSecret: ""
+existingSecretKey: "nvidia-api-key"
+
+secret:
+  # Additional key/value pairs to store in the chart-managed Secret.
+  # Each key is also exposed to the main container as an env var with automatic normalization:
+  # `github-token` -> `GITHUB_TOKEN`, `openai-api-key` -> `OPENAI_API_KEY`.
+  extraStringData: {}
+
+extraEnv: []
+
+resources:
+  requests:
+    cpu: "2"
+    memory: 8Gi
+  limits:
+    memory: 16Gi
+
+gpu:
+  enabled: false
+
+podSecurityContext:
+  fsGroup: 999
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+
+# Optional extra container args (command is fixed in templates/deployment.yaml).
+args: []
+
+persistence:
+  workspace:
+    enabled: true
+    existingClaim: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 10Gi
+    storageClassName: "longhorn"
+
+service:
+  type: ClusterIP
+  # OpenClaw gateway HTTP + WebSocket (Control UI + API). Keep this aligned with gateway.port.
+  port: 18789
+  annotations: {}
+  # ExternalDNS is on by default. Hostnames come from httpRoute.hostnames unless overridden here,
+  # and the target is auto-derived from the Traefik LoadBalancer Service by default.
+  externalDns:
+    enabled: true
+    # If empty and httpRoute.enabled is true, hostnames are taken from httpRoute.hostnames (comma-joined).
+    hostname: ""
+    # Optional explicit DNS target. If empty, the chart looks up the Traefik LoadBalancer Service.
+    target: ""
+    targetServiceNamespace: "kube-system"
+    targetServiceName: "traefik"
+
+# Gateway API HTTPRoute — parentRefs match Traefik installed via rke2-traefik-additional-manifest.yaml.
+# https://doc.traefik.io/traefik/providers/kubernetes-gateway/
+httpRoute:
+  enabled: true
+  annotations: {}
+  labels: {}
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: traefik-gateway
+      namespace: kube-system
+      sectionName: websecure
+  hostnames:
+    - nemoclaw.example.com
+  matches: []
+  tls:
+    certManager:
+      enabled: false
+      clusterIssuer: letsencrypt-prod
+      issuerKind: ClusterIssuer
+      issuerGroup: cert-manager.io
+      secretName: ""
+      gatewayRef:
+        enabled: false
+        group: gateway.networking.k8s.io
+        kind: Gateway
+        name: traefik-gateway
+        namespace: kube-system
+
+networkPolicy:
+  enabled: false
+  allowEgressHttps: true
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+replicaCount: 1

@@ -1,0 +1,45 @@
+{{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-FileCopyrightText: Copyright (c) 2026 KubeTEE AI LTD
+SPDX-License-Identifier: Apache-2.0
+*/}}
+{{- if .Values.httpRoute.enabled }}
+{{- if not .Values.httpRoute.parentRefs }}
+{{- fail "nemoclaw: httpRoute.parentRefs is required when httpRoute.enabled is true" }}
+{{- end }}
+{{- if not .Values.httpRoute.hostnames }}
+{{- fail "nemoclaw: httpRoute.hostnames is required when httpRoute.enabled is true" }}
+{{- end }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "nemoclaw.fullname" . }}
+  labels:
+    {{- include "nemoclaw.labels" . | nindent 4 }}
+    {{- with .Values.httpRoute.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.httpRoute.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  parentRefs:
+    {{- toYaml .Values.httpRoute.parentRefs | nindent 4 }}
+  hostnames:
+    {{- range .Values.httpRoute.hostnames }}
+    - {{ . | quote }}
+    {{- end }}
+  rules:
+    - matches:
+        {{- if .Values.httpRoute.matches }}
+        {{- toYaml .Values.httpRoute.matches | nindent 8 }}
+        {{- else }}
+        - path:
+            type: PathPrefix
+            value: /
+        {{- end }}
+      backendRefs:
+        - name: {{ include "nemoclaw.fullname" . }}
+          port: {{ .Values.service.port }}
+{{- end }}

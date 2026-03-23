@@ -1,0 +1,53 @@
+{{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-FileCopyrightText: Copyright (c) 2026 KubeTEE AI LTD
+SPDX-License-Identifier: Apache-2.0
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nemoclaw.fullname" . }}
+  labels:
+    {{- include "nemoclaw.labels" . | nindent 4 }}
+  {{- $externalDns := get .Values.service "externalDns" | default dict }}
+  {{- if or .Values.service.externalDns.enabled .Values.service.annotations }}
+  annotations:
+    {{- if .Values.service.externalDns.enabled }}
+    {{- $ann := "" }}
+    {{- if .Values.service.externalDns.hostname }}
+    {{- $ann = .Values.service.externalDns.hostname }}
+    {{- else if .Values.httpRoute.enabled }}
+    {{- $ann = join "," .Values.httpRoute.hostnames }}
+    {{- else }}
+    {{- fail "nemoclaw: service.externalDns.hostname is required when service.externalDns.enabled is true and httpRoute.enabled is false (no hostnames to derive)" }}
+    {{- end }}
+    {{- $target := .Values.service.externalDns.target | default "" }}
+    {{- if not $target }}
+    {{- $targetServiceNamespace := get $externalDns "targetServiceNamespace" | default "kube-system" }}
+    {{- $targetServiceName := get $externalDns "targetServiceName" | default "traefik" }}
+    {{- $targetService := lookup "v1" "Service" $targetServiceNamespace $targetServiceName }}
+    {{- if $targetService }}
+    {{- $loadBalancer := get (get $targetService "status" | default dict) "loadBalancer" | default dict }}
+    {{- $ingress := get $loadBalancer "ingress" | default list }}
+    {{- if gt (len $ingress) 0 }}
+    {{- $firstTarget := index $ingress 0 }}
+    {{- $target = (get $firstTarget "hostname" | default (get $firstTarget "ip" | default "")) }}
+    {{- end }}
+    {{- end }}
+    {{- end }}
+    external-dns.alpha.kubernetes.io/hostname: {{ $ann | quote }}
+    external-dns.alpha.kubernetes.io/target: {{ required "nemoclaw: could not determine service.externalDns.target automatically; set service.externalDns.target or ensure the Traefik Service has a LoadBalancer IP/hostname" $target | quote }}
+    {{- end }}
+    {{- with .Values.service.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "nemoclaw.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP

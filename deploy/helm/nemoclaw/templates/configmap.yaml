@@ -1,0 +1,80 @@
+{{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-FileCopyrightText: Copyright (c) 2026 KubeTEE AI LTD
+SPDX-License-Identifier: Apache-2.0
+*/}}
+{{- if .Values.directNvidiaApi.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nemoclaw.fullname" . }}-patch
+  labels:
+    {{- include "nemoclaw.labels" . | nindent 4 }}
+data:
+  patch-openclaw.py: |
+    # Patches baked openclaw.json for Kubernetes (no OpenShell inference.local proxy).
+    import json
+    import os
+    import shutil
+    from urllib.parse import urlparse
+
+    src = "/sandbox/.openclaw/openclaw.json"
+    dst = "/config/openclaw.json"
+    base_url = os.environ.get("NVIDIA_DIRECT_BASE_URL", "https://integrate.api.nvidia.com/v1")
+    api_key = os.environ.get("NVIDIA_API_KEY", "")
+
+    shutil.copy2(src, dst)
+    with open(dst, encoding="utf-8") as f:
+        cfg = json.load(f)
+
+    gw = cfg.setdefault("gateway", {})
+    gw["bind"] = "lan"
+    gw["port"] = int(os.environ.get("GATEWAY_PORT", "18789"))
+    tp = gw.setdefault("trustedProxies", [])
+    for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"):
+        if cidr not in tp:
+            tp.append(cidr)
+    chat_ui = os.environ.get("CHAT_UI_URL", "")
+    if chat_ui:
+        p = urlparse(chat_ui)
+        if p.scheme and p.netloc:
+            origin = f"{p.scheme}://{p.netloc}"
+            cui = gw.setdefault("controlUi", {})
+            ol = cui.setdefault("allowedOrigins", [])
+            if origin not in ol:
+                ol.insert(0, origin)
+
+    providers = cfg.setdefault("models", {}).setdefault("providers", {})
+    nvidia = providers.setdefault("nvidia", {})
+    nvidia["baseUrl"] = base_url
+    if api_key:
+        nvidia["apiKey"] = api_key
+    inference_models = []
+    for model in nvidia.get("models", []):
+        if not isinstance(model, dict):
+            continue
+        full_name = model.get("name") or model.get("id")
+        if isinstance(full_name, str) and full_name:
+            model["id"] = full_name
+            model["name"] = full_name
+            inference_models.append(dict(model))
+
+    if inference_models:
+        providers["inference"] = {
+            "baseUrl": base_url,
+            "apiKey": api_key or "unused",
+            "api": "openai-completions",
+            "models": inference_models,
+        }
+        defaults = cfg.setdefault("agents", {}).setdefault("defaults", {}).setdefault("model", {})
+        current_primary = defaults.get("primary")
+        if isinstance(current_primary, str) and current_primary.startswith("inference/"):
+            pass
+        elif isinstance(current_primary, str) and current_primary:
+            defaults["primary"] = f"inference/{current_primary}"
+        else:
+            defaults["primary"] = f"inference/{inference_models[0]['name']}"
+    with open(dst, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+    os.chmod(dst, 0o444)
+{{- end }}

@@ -1,0 +1,233 @@
+{{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-FileCopyrightText: Copyright (c) 2026 KubeTEE AI LTD
+SPDX-License-Identifier: Apache-2.0
+*/}}
+{{- if not .Values.image.repository }}
+{{- fail "nemoclaw: set image.repository to your built NemoClaw image (see deploy/helm/nemoclaw/KUBETEE.md)" }}
+{{- end }}
+{{- if and .Values.directNvidiaApi.enabled (not .Values.existingSecret) (not .Values.nvidiaApiKey) }}
+{{- fail "nemoclaw: set nvidiaApiKey or existingSecret when directNvidiaApi.enabled is true" }}
+{{- end }}
+{{- $secretName := include "nemoclaw.nvidiaSecretName" . }}
+{{- $secretKey := .Values.existingSecretKey | default "nvidia-api-key" }}
+{{- /* CHAT_UI_URL: public UI when HTTPRoute is on (https + first hostname); else loopback for port-forward / no exposure */}}
+{{- $chatUiUrl := printf "http://127.0.0.1:%v" .Values.service.port }}
+{{- if .Values.httpRoute.enabled }}
+{{- if not .Values.httpRoute.hostnames }}
+{{- fail "nemoclaw: httpRoute.hostnames must include at least one hostname when httpRoute.enabled is true (CHAT_UI_URL is derived from it)" }}
+{{- end }}
+{{- $chatUiUrl = printf "https://%s" (index .Values.httpRoute.hostnames 0) }}
+{{- end }}
+{{- $persistence := get .Values "persistence" | default dict }}
+{{- $workspacePersistence := get $persistence "workspace" | default dict }}
+{{- $secretValues := get .Values "secret" | default dict }}
+{{- $extraSecretData := get $secretValues "extraStringData" | default dict }}
+{{- $workspacePersistenceEnabled := get $workspacePersistence "enabled" | default true }}
+{{- $workspaceExistingClaim := get $workspacePersistence "existingClaim" | default "" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nemoclaw.fullname" . }}
+  labels:
+    {{- include "nemoclaw.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
+    rollingUpdate: null
+  selector:
+    matchLabels:
+      {{- include "nemoclaw.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "nemoclaw.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "nemoclaw.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.directNvidiaApi.enabled }}
+      initContainers:
+        - name: patch-openclaw-config
+          image: {{ include "nemoclaw.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+          env:
+            - name: GATEWAY_PORT
+              value: {{ .Values.service.port | quote }}
+            - name: CHAT_UI_URL
+              value: {{ $chatUiUrl | quote }}
+            - name: NVIDIA_DIRECT_BASE_URL
+              value: {{ .Values.directNvidiaApi.baseUrl | quote }}
+            - name: NVIDIA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ $secretKey | quote }}
+          command:
+            - /bin/bash
+            - -c
+            - python3 /scripts/patch-openclaw.py
+          volumeMounts:
+            - name: openclaw-config
+              mountPath: /config
+            - name: patch-script
+              mountPath: /scripts
+              readOnly: true
+      {{- end }}
+      containers:
+        - name: nemoclaw
+          image: {{ include "nemoclaw.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /usr/local/bin/nemoclaw-start
+          {{- with .Values.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: GATEWAY_PORT
+              value: {{ .Values.service.port | quote }}
+            - name: CHAT_UI_URL
+              value: {{ $chatUiUrl | quote }}
+            - name: NVIDIA_DIRECT_BASE_URL
+              value: {{ .Values.directNvidiaApi.baseUrl | quote }}
+            {{- if .Values.directNvidiaApi.enabled }}
+            - name: NVIDIA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ $secretKey | quote }}
+            {{- end }}
+            {{- if .Values.existingSecret }}
+            {{- $existingSecretObj := lookup "v1" "Secret" .Release.Namespace .Values.existingSecret }}
+            {{- if $existingSecretObj }}
+            {{- range $rawKey, $_ := (get $existingSecretObj "data" | default dict) }}
+            {{- $envName := regexReplaceAll "[^A-Z0-9_]" ($rawKey | upper | replace "-" "_" | replace "." "_") "_" }}
+            {{- if ne $envName "NVIDIA_API_KEY" }}
+            - name: {{ $envName }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ $rawKey | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- else }}
+            {{- range $rawKey, $_ := $extraSecretData }}
+            {{- $envName := regexReplaceAll "[^A-Z0-9_]" ($rawKey | upper | replace "-" "_" | replace "." "_") "_" }}
+            {{- if ne $envName "NVIDIA_API_KEY" }}
+            - name: {{ $envName }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ $rawKey | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          startupProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - "require('http').get('http://127.0.0.1:{{ .Values.service.port }}/healthz', r => process.exit(r.statusCode < 400 ? 0 : 1)).on('error', () => process.exit(1))"
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - "require('http').get('http://127.0.0.1:{{ .Values.service.port }}/readyz', r => process.exit(r.statusCode < 400 ? 0 : 1)).on('error', () => process.exit(1))"
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - "require('http').get('http://127.0.0.1:{{ .Values.service.port }}/healthz', r => process.exit(r.statusCode < 400 ? 0 : 1)).on('error', () => process.exit(1))"
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          {{- if .Values.gpu.enabled }}
+          resources:
+            limits:
+              {{- merge (.Values.resources.limits | default dict) (dict "nvidia.com/gpu" 1) | toYaml | nindent 14 }}
+            requests:
+              {{- merge (.Values.resources.requests | default dict) (dict "nvidia.com/gpu" 1) | toYaml | nindent 14 }}
+          {{- else }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- end }}
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if .Values.directNvidiaApi.enabled }}
+          volumeMounts:
+            - name: openclaw-config
+              mountPath: /sandbox/.openclaw/openclaw.json
+              subPath: openclaw.json
+            {{- if $workspacePersistenceEnabled }}
+            - name: workspace
+              mountPath: /sandbox/.openclaw-data/workspace
+            {{- end }}
+          {{- else if $workspacePersistenceEnabled }}
+          volumeMounts:
+            - name: workspace
+              mountPath: /sandbox/.openclaw-data/workspace
+          {{- end }}
+      volumes:
+        {{- if .Values.directNvidiaApi.enabled }}
+        - name: openclaw-config
+          emptyDir: {}
+        - name: patch-script
+          configMap:
+            name: {{ include "nemoclaw.fullname" . }}-patch
+            defaultMode: 0444
+        {{- end }}
+        {{- if $workspacePersistenceEnabled }}
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: {{ $workspaceExistingClaim | default (printf "%s-workspace" (include "nemoclaw.fullname" .)) }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

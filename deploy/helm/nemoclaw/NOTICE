@@ -1,0 +1,9 @@
+NemoClaw Helm chart (Kubernetes deployment for KubeTEE)
+
+Copyright (c) 2026 KubeTEE AI LTD
+https://kubetee.ai
+
+This Helm chart is licensed under the Apache License, Version 2.0.
+See the LICENSE file in this directory for the full license text.
+
+SPDX-License-Identifier: Apache-2.0

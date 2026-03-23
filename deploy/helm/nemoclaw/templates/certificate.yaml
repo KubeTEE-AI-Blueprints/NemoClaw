@@ -1,0 +1,38 @@
+{{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-FileCopyrightText: Copyright (c) 2026 KubeTEE AI LTD
+SPDX-License-Identifier: Apache-2.0
+*/}}
+{{- if and .Values.httpRoute.enabled .Values.httpRoute.tls.certManager.enabled }}
+{{- if not .Values.httpRoute.tls.certManager.clusterIssuer }}
+{{- fail "nemoclaw: httpRoute.tls.certManager.clusterIssuer is required when httpRoute.tls.certManager.enabled is true" }}
+{{- end }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "nemoclaw.fullname" . }}-tls
+  labels:
+    {{- include "nemoclaw.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "nemoclaw.tlsSecretName" . }}
+  issuerRef:
+    name: {{ .Values.httpRoute.tls.certManager.clusterIssuer | quote }}
+    kind: {{ .Values.httpRoute.tls.certManager.issuerKind | quote }}
+    group: {{ .Values.httpRoute.tls.certManager.issuerGroup | quote }}
+  dnsNames:
+    {{- range .Values.httpRoute.hostnames }}
+    - {{ . | quote }}
+    {{- end }}
+  {{- if .Values.httpRoute.tls.certManager.gatewayRef.enabled }}
+  {{- if not .Values.httpRoute.tls.certManager.gatewayRef.name }}
+  {{- fail "nemoclaw: httpRoute.tls.certManager.gatewayRef.name is required when gatewayRef.enabled is true" }}
+  {{- end }}
+  gateway:
+    group: {{ .Values.httpRoute.tls.certManager.gatewayRef.group | quote }}
+    kind: {{ .Values.httpRoute.tls.certManager.gatewayRef.kind | quote }}
+    name: {{ .Values.httpRoute.tls.certManager.gatewayRef.name | quote }}
+    {{- if .Values.httpRoute.tls.certManager.gatewayRef.namespace }}
+    namespace: {{ .Values.httpRoute.tls.certManager.gatewayRef.namespace | quote }}
+    {{- end }}
+  {{- end }}
+{{- end }}

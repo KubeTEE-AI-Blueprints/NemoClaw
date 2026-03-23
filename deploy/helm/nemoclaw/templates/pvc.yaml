@@ -1,0 +1,31 @@
+{{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-FileCopyrightText: Copyright (c) 2026 KubeTEE AI LTD
+SPDX-License-Identifier: Apache-2.0
+*/}}
+{{- $persistence := get .Values "persistence" | default dict }}
+{{- $workspacePersistence := get $persistence "workspace" | default dict }}
+{{- $workspacePersistenceEnabled := get $workspacePersistence "enabled" | default true }}
+{{- $workspaceExistingClaim := get $workspacePersistence "existingClaim" | default "" }}
+{{- $workspaceAccessModes := get $workspacePersistence "accessModes" | default (list "ReadWriteOnce") }}
+{{- $workspaceSize := get $workspacePersistence "size" | default "10Gi" }}
+{{- $workspaceStorageClassName := get $workspacePersistence "storageClassName" | default "longhorn" }}
+{{- if and $workspacePersistenceEnabled (not $workspaceExistingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "nemoclaw.fullname" . }}-workspace
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "nemoclaw.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml $workspaceAccessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ $workspaceSize | quote }}
+  {{- with $workspaceStorageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}

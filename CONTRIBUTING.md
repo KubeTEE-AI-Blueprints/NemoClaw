@@ -57,6 +57,21 @@ These are the primary `make` and `npm` targets for day-to-day development:
 | `cd nemoclaw && npm test` | Run plugin unit tests (Vitest) |
 | `make docs` | Build documentation (Sphinx/MyST) |
 | `make docs-live` | Serve docs locally with auto-rebuild |
+| `npx prek run --all-files` | Run all hooks from `.pre-commit-config.yaml` — see below |
+
+### Git hooks (prek)
+
+All git hooks are managed by [prek](https://prek.j178.dev/), a fast, single-binary pre-commit hook runner installed as a devDependency (`@j178/prek`). The `npm install` step runs `prek install` automatically via the `prepare` script, which wires up the following hooks from [`.pre-commit-config.yaml`](.pre-commit-config.yaml):
+
+| Hook | What runs |
+|------|-----------|
+| **pre-commit** | File fixers, formatters, linters, Vitest (plugin) |
+| **commit-msg** | commitlint (Conventional Commits) |
+| **pre-push** | TypeScript type check (`tsc --noEmit`), Pyright (Python) |
+
+For a full manual check: `npx prek run --all-files`. For scoped runs: `npx prek run --from-ref <base> --to-ref HEAD`.
+
+`make check` remains the primary documented linter entry point.
 
 ## Project Structure
 

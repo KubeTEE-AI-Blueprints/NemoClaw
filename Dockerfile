@@ -1,14 +1,14 @@
 # NemoClaw sandbox image — OpenClaw + NemoClaw plugin inside OpenShell
 
 # Stage 1: Build TypeScript plugin from source
-FROM node:22-slim AS builder
+FROM node:22-slim@sha256:4f77a690f2f8946ab16fe1e791a3ac0667ae1c3575c3e4d0d4589e9ed5bfaf3d AS builder
 COPY nemoclaw/package.json nemoclaw/tsconfig.json /opt/nemoclaw/
 COPY nemoclaw/src/ /opt/nemoclaw/src/
 WORKDIR /opt/nemoclaw
 RUN npm install && npm run build
 
 # Stage 2: Runtime image
-FROM node:22-slim
+FROM node:22-slim@sha256:4f77a690f2f8946ab16fe1e791a3ac0667ae1c3575c3e4d0d4589e9ed5bfaf3d
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -83,6 +83,12 @@ ARG CHAT_UI_URL=http://127.0.0.1:18789
 # Pass --build-arg NEMOCLAW_BUILD_ID=$(date +%s) to bust the cache.
 ARG NEMOCLAW_BUILD_ID=default
 
+# SECURITY: Promote build-args to env vars so the Python script reads them
+# via os.environ, never via string interpolation into Python source code.
+# Direct ARG interpolation into python3 -c is a code injection vector (C-2).
+ENV NEMOCLAW_MODEL=${NEMOCLAW_MODEL} \
+    CHAT_UI_URL=${CHAT_UI_URL}
+
 WORKDIR /sandbox
 USER sandbox
 
@@ -94,8 +100,8 @@ USER sandbox
 RUN python3 -c "\
 import json, os, secrets; \
 from urllib.parse import urlparse; \
-model = '${NEMOCLAW_MODEL}'; \
-chat_ui_url = '${CHAT_UI_URL}'; \
+model = os.environ['NEMOCLAW_MODEL']; \
+chat_ui_url = os.environ['CHAT_UI_URL']; \
 parsed = urlparse(chat_ui_url); \
 chat_origin = f'{parsed.scheme}://{parsed.netloc}' if parsed.scheme and parsed.netloc else 'http://127.0.0.1:18789'; \
 origins = ['http://127.0.0.1:18789']; \

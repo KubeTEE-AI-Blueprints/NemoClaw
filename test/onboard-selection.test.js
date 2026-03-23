@@ -1,16 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-const { describe, it } = require("node:test");
-const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const os = require("node:os");
-const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+import { describe, it, expect } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
 
 describe("onboard provider selection UX", () => {
   it("prompts explicitly instead of silently auto-selecting detected Ollama", () => {
-    const repoRoot = path.join(__dirname, "..");
+    const repoRoot = path.join(import.meta.dirname, "..");
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-selection-"));
     const scriptPath = path.join(tmpDir, "selection-check.js");
     const onboardPath = JSON.stringify(path.join(repoRoot, "bin", "lib", "onboard.js"));
@@ -69,16 +68,20 @@ const { setupNim } = require(${onboardPath});
       },
     });
 
-    assert.equal(result.status, 0, result.stderr);
-    assert.notEqual(result.stdout.trim(), "", result.stderr);
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).not.toBe("");
     const payload = JSON.parse(result.stdout.trim());
-    assert.equal(payload.result.provider, "nvidia-nim");
-    assert.equal(payload.result.model, "nvidia/nemotron-3-super-120b-a12b");
-    assert.equal(payload.promptCalls, 2);
-    assert.match(payload.messages[0], /Choose \[/);
-    assert.match(payload.messages[1], /Choose model \[1\]/);
-    assert.ok(payload.lines.some((line) => line.includes("Detected local inference option")));
-    assert.ok(payload.lines.some((line) => line.includes("Press Enter to keep the cloud default")));
-    assert.ok(payload.lines.some((line) => line.includes("Cloud models:")));
+    expect(payload.result.provider).toBe("nvidia-nim");
+    expect(payload.result.model).toBe("nvidia/nemotron-3-super-120b-a12b");
+    expect(payload.promptCalls).toBe(2);
+    expect(payload.messages[0]).toMatch(/Choose \[/);
+    expect(payload.messages[1]).toMatch(/Choose model \[1\]/);
+    expect(
+      payload.lines.some((line) => line.includes("Detected local inference option"))
+    ).toBeTruthy();
+    expect(
+      payload.lines.some((line) => line.includes("Press Enter to keep the cloud default"))
+    ).toBeTruthy();
+    expect(payload.lines.some((line) => line.includes("Cloud models:"))).toBeTruthy();
   });
 });

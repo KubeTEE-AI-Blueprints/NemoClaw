@@ -14,7 +14,7 @@ Open an issue when you encounter one of the following situations.
 
 Install the following before you begin.
 
-- Node.js 20+ and npm 10+
+- Node.js 22.16+ and npm 10+
 - Python 3.11+ (for blueprint and documentation builds)
 - Docker (running)
 - [uv](https://docs.astral.sh/uv/) (for Python dependency management)
@@ -45,6 +45,12 @@ npm run build        # one-time compile
 npm run dev          # watch mode
 ```
 
+The CLI (`bin/`, `scripts/`) is type-checked separately:
+
+```bash
+npm run typecheck:cli   # or: npx tsc -p tsconfig.cli.json
+```
+
 ## Main Tasks
 
 These are the primary `make` and `npm` targets for day-to-day development:
@@ -54,6 +60,7 @@ These are the primary `make` and `npm` targets for day-to-day development:
 | `make check` | Run all linters (TypeScript + Python) |
 | `make lint` | Same as `make check` |
 | `make format` | Auto-format TypeScript and Python source |
+| `npm run typecheck:cli` | Type-check CLI TypeScript (`bin/`, `scripts/`) |
 | `npm test` | Run root-level tests (`test/*.test.js`) |
 | `cd nemoclaw && npm test` | Run plugin unit tests (Vitest) |
 | `make docs` | Build documentation (Sphinx/MyST) |
@@ -68,7 +75,7 @@ All git hooks are managed by [prek](https://prek.j178.dev/), a fast, single-bina
 |------|-----------|
 | **pre-commit** | File fixers, formatters, linters, Vitest (plugin) |
 | **commit-msg** | commitlint (Conventional Commits) |
-| **pre-push** | TypeScript type check (`tsc --noEmit`), Pyright (Python) |
+| **pre-push** | TypeScript type check (`tsc --noEmit` for plugin, JS, and CLI) |
 
 For a full manual check: `npx prek run --all-files`. For scoped runs: `npx prek run --from-ref <base> --to-ref HEAD`.
 
@@ -133,7 +140,7 @@ The generated `.agents/skills/docs/` directory is committed to the repo but is e
 
 Each skill directory contains:
 
-```
+```text
 .agents/skills/docs/<skill-name>/
 ├── SKILL.md              # Frontmatter + procedures + related skills
 └── references/           # Detailed concept and reference content (loaded on demand)
@@ -173,7 +180,7 @@ Follow these steps to submit a pull request.
 
 This project uses [Conventional Commits](https://www.conventionalcommits.org/). All commit messages must follow the format:
 
-```
+```text
 <type>(<scope>): <description>
 
 [optional body]
@@ -194,7 +201,7 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/). 
 
 **Examples:**
 
-```
+```text
 feat(cli): add --profile flag to nemoclaw onboard
 fix(blueprint): handle missing API key gracefully
 docs: update quickstart for new install wizard

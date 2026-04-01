@@ -79,13 +79,22 @@ esac
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
+CHECKSUM_FILE="openshell-checksums-sha256.txt"
 if command -v gh >/dev/null 2>&1; then
   GH_TOKEN="${GITHUB_TOKEN:-}" gh release download --repo NVIDIA/OpenShell \
     --pattern "$ASSET" --dir "$tmpdir"
+  GH_TOKEN="${GITHUB_TOKEN:-}" gh release download --repo NVIDIA/OpenShell \
+    --pattern "$CHECKSUM_FILE" --dir "$tmpdir"
 else
   curl -fsSL "https://github.com/NVIDIA/OpenShell/releases/latest/download/$ASSET" \
     -o "$tmpdir/$ASSET"
+  curl -fsSL "https://github.com/NVIDIA/OpenShell/releases/latest/download/$CHECKSUM_FILE" \
+    -o "$tmpdir/$CHECKSUM_FILE"
 fi
+
+info "Verifying SHA-256 checksum..."
+(cd "$tmpdir" && grep -F "$ASSET" "$CHECKSUM_FILE" | shasum -a 256 -c -) \
+  || fail "SHA-256 checksum verification failed for $ASSET"
 
 tar xzf "$tmpdir/$ASSET" -C "$tmpdir"
 
@@ -98,7 +107,8 @@ elif [ "${NEMOCLAW_NON_INTERACTIVE:-}" = "1" ] || [ ! -t 0 ]; then
   mkdir -p "$target_dir"
   install -m 755 "$tmpdir/openshell" "$target_dir/openshell"
   warn "Installed openshell to $target_dir/openshell (user-local path)"
-  warn "Ensure $target_dir is on PATH for future shells."
+  warn "For future shells, run: export PATH=\"$target_dir:\$PATH\""
+  warn "Add that export to your shell profile, or open a new shell before using openshell directly."
 else
   sudo install -m 755 "$tmpdir/openshell" "$target_dir/openshell"
 fi

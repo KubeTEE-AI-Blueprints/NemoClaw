@@ -6,6 +6,8 @@ const { shellQuote } = require("./runner");
 const HOST_GATEWAY_URL = "http://host.openshell.internal";
 const CONTAINER_REACHABILITY_IMAGE = "curlimages/curl:8.10.1";
 const DEFAULT_OLLAMA_MODEL = "nemotron-3-nano:30b";
+const SMALL_OLLAMA_MODEL = "qwen2.5:7b";
+const LARGE_OLLAMA_MIN_MEMORY_MB = 32768;
 
 function getLocalProviderBaseUrl(provider) {
   switch (provider) {
@@ -13,6 +15,17 @@ function getLocalProviderBaseUrl(provider) {
       return `${HOST_GATEWAY_URL}:8000/v1`;
     case "ollama-local":
       return `${HOST_GATEWAY_URL}:11434/v1`;
+    default:
+      return null;
+  }
+}
+
+function getLocalProviderValidationBaseUrl(provider) {
+  switch (provider) {
+    case "vllm-local":
+      return "http://localhost:8000/v1";
+    case "ollama-local":
+      return "http://localhost:11434/v1";
     default:
       return null;
   }
@@ -57,7 +70,8 @@ function validateLocalProvider(provider, runCapture) {
       case "ollama-local":
         return {
           ok: false,
-          message: "Local Ollama was selected, but nothing is responding on http://localhost:11434.",
+          message:
+            "Local Ollama was selected, but nothing is responding on http://localhost:11434.",
         };
       default:
         return { ok: false, message: "The selected local inference provider is unavailable." };
@@ -88,7 +102,10 @@ function validateLocalProvider(provider, runCapture) {
           "Local Ollama is responding on localhost, but containers cannot reach http://host.openshell.internal:11434. Ensure Ollama listens on 0.0.0.0:11434 instead of 127.0.0.1 so sandboxes can reach it.",
       };
     default:
-      return { ok: false, message: "The selected local inference provider is unavailable from containers." };
+      return {
+        ok: false,
+        message: "The selected local inference provider is unavailable from containers.",
+      };
   }
 }
 
@@ -102,17 +119,44 @@ function parseOllamaList(output) {
     .filter(Boolean);
 }
 
-function getOllamaModelOptions(runCapture) {
-  const output = runCapture("ollama list 2>/dev/null", { ignoreError: true });
-  const parsed = parseOllamaList(output);
-  if (parsed.length > 0) {
-    return parsed;
+function parseOllamaTags(output) {
+  try {
+    const parsed = JSON.parse(String(output || ""));
+    return Array.isArray(parsed?.models)
+      ? parsed.models.map((model) => model && model.name).filter(Boolean)
+      : [];
+  } catch {
+    return [];
   }
-  return [DEFAULT_OLLAMA_MODEL];
 }
 
-function getDefaultOllamaModel(runCapture) {
+function getOllamaModelOptions(runCapture) {
+  const tagsOutput = runCapture("curl -sf http://localhost:11434/api/tags 2>/dev/null", {
+    ignoreError: true,
+  });
+  const tagsParsed = parseOllamaTags(tagsOutput);
+  if (tagsParsed.length > 0) {
+    return tagsParsed;
+  }
+
+  const listOutput = runCapture("ollama list 2>/dev/null", { ignoreError: true });
+  return parseOllamaList(listOutput);
+}
+
+function getBootstrapOllamaModelOptions(gpu) {
+  const options = [SMALL_OLLAMA_MODEL];
+  if (gpu && gpu.totalMemoryMB >= LARGE_OLLAMA_MIN_MEMORY_MB) {
+    options.push(DEFAULT_OLLAMA_MODEL);
+  }
+  return options;
+}
+
+function getDefaultOllamaModel(runCapture, gpu = null) {
   const models = getOllamaModelOptions(runCapture);
+  if (models.length === 0) {
+    const bootstrap = getBootstrapOllamaModelOptions(gpu);
+    return bootstrap[0];
+  }
   return models.includes(DEFAULT_OLLAMA_MODEL) ? DEFAULT_OLLAMA_MODEL : models[0];
 }
 
@@ -155,7 +199,9 @@ function validateOllamaModel(model, runCapture) {
         message: `Selected Ollama model '${model}' failed the local probe: ${parsed.error.trim()}`,
       };
     }
-  } catch {}
+  } catch {
+    /* ignored */
+  }
 
   return { ok: true };
 }
@@ -164,11 +210,16 @@ module.exports = {
   CONTAINER_REACHABILITY_IMAGE,
   DEFAULT_OLLAMA_MODEL,
   HOST_GATEWAY_URL,
+  LARGE_OLLAMA_MIN_MEMORY_MB,
+  SMALL_OLLAMA_MODEL,
   getDefaultOllamaModel,
+  getBootstrapOllamaModelOptions,
   getLocalProviderBaseUrl,
+  getLocalProviderValidationBaseUrl,
   getLocalProviderContainerReachabilityCheck,
   getLocalProviderHealthCheck,
   getOllamaModelOptions,
+  parseOllamaTags,
   getOllamaProbeCommand,
   getOllamaWarmupCommand,
   parseOllamaList,
